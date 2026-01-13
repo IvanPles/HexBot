@@ -1,14 +1,23 @@
-# import numpy as np
+import numpy as np
+from typing import Dict, List, Set, Tuple
 from copy import deepcopy
+import logging
+
+###
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 adjacent = [(-1, 0), (0, -1), (1, 0), (0, 1), (-1, 1), (1, -1)]
-n = 6
+
 
 class CellGroup:
 
-    def __init__(self, cells):
+    def __init__(self, cells: List[Tuple[int, int]], n):
         self.cells = set(cells)
-        self.hash_val = hash(tuple(sorted(cells, key=lambda x: x[0]+x[1]*100)))
+        sorted_cells = sorted(cells, key=lambda x: x[0]+x[1]*100)
+        self.hash_val = hash(tuple(sorted_cells))
+        self.index = sorted_cells[0][0]+sorted_cells[0][1]*100
+        self.n = n
 
     def __eq__(self, other) -> bool:
         return self.cells==other.cells
@@ -19,7 +28,7 @@ class CellGroup:
     def adjacency(self):
         res = set()
         for cell in self.cells:
-            adjacent_cells = adjacency(cell)
+            adjacent_cells = adjacency(cell, self.n)
             res.update(c for c in adjacent_cells if c not in self.cells)
         return res
     
@@ -29,97 +38,266 @@ class CellGroup:
 
 class TopSide(CellGroup):
 
-    def __init__(self):
+    def __init__(self, n: int):
         cells = [(-1, i) for i in range(n)]
-        super().__init__(cells)
+        super().__init__(cells, n)
 
     def adjacency(self):
-        return set((0, i) for i in range(n))
+        return set((0, i) for i in range(self.n))
     
     def __repr__(self):
         return "Top Side"
 
 class BottomSide(CellGroup):
 
-    def __init__(self):
+    def __init__(self, n: int):
         cells = [(n, i) for i in range(n)]
-        super().__init__(cells)
+        super().__init__(cells, n)
 
     def adjacency(self):
-        return set((n-1, i) for i in range(n))
+        return set((self.n-1, i) for i in range(self.n))
 
     def __repr__(self):
         return "Bot Side"
 
+def update_cell_map(cell_map: Dict, cell_1: CellGroup, cell_2: CellGroup, carrier: Set):
+    """
+    Update map with carriers using carrier. Ensures symmetry
+    """
+    cell_map.setdefault(cell_1, dict())
+    cell_map[cell_1].setdefault(cell_2, [])
+    cell_map[cell_1][cell_2] = check_and_update_subsets(cell_map[cell_1][cell_2], carrier)
+    # if carrier not in cell_map[cell_1][cell_2]:
+    #     cell_map[cell_1][cell_2].append(carrier)
 
-def merge_cellgroups(cellgroups):
+    # second cell
+    cell_map.setdefault(cell_2, dict())
+    cell_map[cell_2].setdefault(cell_1, [])
+    cell_map[cell_2][cell_1] = check_and_update_subsets(cell_map[cell_2][cell_1], carrier)
+    # if carrier not in cell_map[cell_2][cell_1]:
+    #     cell_map[cell_2][cell_1].append(carrier)
+    return cell_map
+
+def check_and_update_subsets(old_sets: List, new_set: Set):
+    new_sets = []
+    keep_new = True
+    for s in old_sets:
+        if s==new_set:
+            return old_sets
+        if s.issubset(new_set):
+            keep_new = False
+        if not new_set.issubset(s):
+            new_sets.append(s)
+    if keep_new:
+        new_sets.append(new_set)
+    return new_sets
+
+def merge_cellgroups(cellgroups: List[CellGroup]):
     new_cells = set().union(*[gr.cells for gr in cellgroups])
-    return CellGroup(new_cells)
+    return CellGroup(new_cells, n=cellgroups[0].n)
 
-def adjacency(cell):
+def adjacency(cell: Tuple[int, int], n):
     x, y = cell[0:2]
     res = [(x+dx, y+dy) for dx, dy in adjacent 
-            if x+dx>-1 and y+dy>-2 and x+dx<n and y+dy<n+1]
+            if x+dx>-2 and y+dy>-1 and x+dx<n+1 and y+dy<n]
     return res
 
-def create_vc_map_from_cells(empty_cells, black_groups):
-    """
-    Create vc map and vsc map from cells.
-    And populate using adjacency
-    """
-    special_cells = [el for el in [TopSide(), BottomSide()] if el in black_groups]
-    total_groups = empty_cells.union(black_groups)
-    vc_map = {gr: {gr2: [] for gr2 in total_groups } for gr in total_groups}
-    vsc_map ={gr: {gr2: [] for gr2 in total_groups } for gr in total_groups}
-    new_vc = {}
-    for cell in vc_map.keys():
+
+class BoardStateGroups:
+
+    def __init__(self, n: int):
+        self.n = n
+        self.player_groups = set()
+        self.empty_cells = set()
+        self.opponent_groups = set()
+        self.vc_map = dict() 
+        self.vsc_map = dict()
+        self.special_cells = list()
+        
+    def load_from_board(self, board_state: np.ndarray):
+        assert len(board_state.shape) == 2
+        assert board_state.shape[0] == board_state.shape[1]
+        self.create_groups_form_board(board_state)
+        self.create_vc_map_from_cells()
+
+    def create_groups_form_board(self, board: np.ndarray):
+        bottom_side = BottomSide(self.n)
+        top_side = TopSide(self.n)
+        self.special_cells.extend([top_side, bottom_side])
+        self.player_groups = {bottom_side, top_side}
+        for i in range(self.n):
+            for j in range(self.n):
+                if board[i][j] == 0:
+                    self.empty_cells.add(CellGroup([(i,j)], self.n))
+                elif board[i][j] == -1:
+                    self.opponent_groups.add(CellGroup([(i,j)], self.n))
+                elif board[i][j] == 1:
+                    self.player_groups.add(CellGroup([(i,j)], self.n))
+                else:
+                    continue
+        ### merge groups
+        self.player_groups = self.merge_groups(self.player_groups)
+        self.opponent_groups = self.merge_groups(self.opponent_groups)
+        return 
+
+    @staticmethod
+    def merge_cell_and_group(cell: CellGroup, groups: Set[CellGroup]):
+        """
+        Merge one cell if necessary 
+        """
         adjacent_cells = cell.adjacency()
+        merged_groups = []
         for adj_cell in adjacent_cells:
-            adj_cell_gr = CellGroup([adj_cell])
-            if adj_cell_gr in vc_map[cell]:
-                vc_map[cell][adj_cell_gr].append(set())
-                ##
-                new_vc.setdefault(cell, dict())
-                new_vc[cell].setdefault(adj_cell_gr, [])
-                new_vc[cell][adj_cell_gr].append(set())
-    for special_cell in special_cells:
-        adjacent_cells = special_cell.adjacency()
-        adjacent_cells = [CellGroup([cell]) for cell in adjacent_cells]
-        for adj_cell in adjacent_cells:
-            if adj_cell in vc_map:
-                vc_map[adj_cell][special_cell] = [set()]
-                new_vc.setdefault(adj_cell, dict())
-                new_vc[adj_cell].setdefault(special_cell, [])
-                new_vc[adj_cell][special_cell].append(set())
-    return vc_map, vsc_map, new_vc
+            logger.info(f'searching {adj_cell}, {cell}')
+            for gr in groups:
+                if adj_cell in gr.cells and gr not in merged_groups:
+                    logger.info(f'merging group {adj_cell}, {cell}')
+                    merged_groups.append(gr)
+                else:
+                    logger.info(f'not found {adj_cell}, {gr}')
+        new_group = merge_cellgroups(merged_groups+[cell])
+        return new_group, merged_groups
 
-def create_groups_from_empty_board(n):
-    """
-    Create cell groups and vc map for board size n
-    """
-    bottom_side = BottomSide()
-    top_side = TopSide()
-    empty_cells = set( CellGroup([(i, j)]) for i in range(n) for j in range(n))
-    black_groups = {bottom_side, top_side}
-    vc_map, vsc_map, new_vc = create_vc_map_from_cells(empty_cells, black_groups)
-    return empty_cells, black_groups, vc_map, vsc_map, new_vc
+    @staticmethod
+    def merge_groups(cell_groups: Set[CellGroup]):
+        new_groups = set()
+        for cell_gr in cell_groups:
+            new_gr, merged_groups = BoardStateGroups.merge_cell_and_group(cell_gr, new_groups)
+            new_groups.add(new_gr)
+            for m_gr in merged_groups:
+                new_groups.discard(m_gr)
+        return new_groups
+    
+    def create_vc_map_from_cells(self):
+        total_groups = self.empty_cells.union(self.player_groups)
+        vc_map = {gr: {gr2: [] for gr2 in total_groups } for gr in total_groups}
+        vsc_map ={gr: {gr2: [] for gr2 in total_groups } for gr in total_groups}
+        for cell_gr in total_groups:
+            adjacent_cells = cell_gr.adjacency()
+            for adj_cell in adjacent_cells:
+                adj_cell_gr = CellGroup([adj_cell], self.n)
+                if adj_cell_gr in self.empty_cells and len(vc_map[cell_gr][adj_cell_gr])<1:
+                    vc_map[cell_gr][adj_cell_gr].append(set()) 
+                    vc_map[adj_cell_gr][cell_gr].append(set()) 
+        ##
+        self.vc_map = vc_map
+        self.vsc_map = vsc_map
+        return None
+    
+    def make_move(self, cell: Tuple[int, int], player=True):
+        cell_gr = CellGroup([cell], self.n)
+        new_state = BoardStateGroups(self.n)
+        new_state.empty_cells = self.empty_cells.copy()
+        new_state.player_groups = self.player_groups.copy()
+        new_state.opponent_groups = self.opponent_groups.copy()
+        if player:
+            new_group, merged_groups = BoardStateGroups.merge_cell_and_group(cell_gr, self.player_groups)
+            for m_gr in merged_groups:
+                new_state.player_groups.discard(m_gr)
+            new_state.player_groups.add(new_group)
+        else:
+            new_group, merged_groups = BoardStateGroups.merge_cell_and_group(cell_gr, self.opponent_groups)
+            for m_gr in merged_groups:
+                new_state.opponent_groups.discard(m_gr)
+            new_state.opponent_groups.add(new_group)
+        new_state.empty_cells.discard(cell_gr)
+        return new_state
 
-def create_new_group_from_cell(cell, groups):
-    """
-    Merge one cell of B color with other groups if necessary 
-    """
-    adjacent_cells = cell.adjacency()
-    old_groups = []
-    for adj_cell in adjacent_cells:
-        for gr in groups:
-            if adj_cell in gr.cells and gr not in old_groups:
-                old_groups.append(gr)
-    if len(old_groups)>0:
-        old_groups.append(cell)
-        new_group = merge_cellgroups(old_groups)
-        return new_group, old_groups
-    else:
-        return cell, old_groups
+    def and_rule(self, cell_1: CellGroup, cell_2: CellGroup, cell_mid: CellGroup, 
+                 carrier1: Set, carrier2: Set, new_vcs: Dict):
+        cell_1_in_cr2 = cell_1.cells.intersection(carrier2) == set()
+        cell_2_in_cr1 = cell_2.cells.intersection(carrier1) == set()
+        carrier_intersection = carrier1.intersection(carrier2) == set()
+        new_carrier = carrier1.union(carrier2)
+        add_carriers = new_vcs.get(cell_1, dict()).get(cell_2, [])
+        existing_vc = any(c.issubset(new_carrier) for c in self.vc_map[cell_1][cell_2]+add_carriers)
+        if not (cell_1_in_cr2 and cell_2_in_cr1 and carrier_intersection) or existing_vc:
+            return 0, set()
+        if cell_mid in self.player_groups:
+            return 1, new_carrier
+        else:
+            new_carrier = new_carrier.union(cell_mid.cells)
+            existing_vsc = any(c.issubset(new_carrier) for c in self.vsc_map[cell_1][cell_2])
+            if not existing_vsc:
+                return 2, new_carrier
+            else:
+                return 0, set()
+
+    def or_rule(self, vsc_carriers: Set, carrier_union: Set, carrier_intersection: Set):
+        new_vcs = []
+        for carrier in vsc_carriers:
+            new_union = carrier_union.union(carrier)
+            new_intersec = carrier_intersection.intersection(carrier)
+            if new_intersec == set():
+                new_vcs = check_and_update_subsets(new_vcs, new_union)
+            else:
+                vsc_carriers_new = deepcopy(vsc_carriers)
+                vsc_carriers_new.remove(carrier)
+                res = self.or_rule(vsc_carriers_new, new_union, new_intersec)
+                for val in res:
+                    new_vcs = check_and_update_subsets(new_vcs, val)
+        return new_vcs
+
+    def H_search(self, new_vc_map: Dict, generations_num: int = 1, verbose_cells=None):
+        """
+        H search. Iteratively searches for new Virtual connections
+        """
+        verbose_cells = [] if verbose_cells is None else verbose_cells
+        ##
+        all_cells = self.empty_cells.union(self.player_groups)
+        for i_gen in range(generations_num):
+            new_vc_curr = dict()
+            logger.info(f'Generation {i_gen}')
+            for cell_1, sub_map in new_vc_map.items():
+                for cell_mid, carrier_list in sub_map.items():
+                    for carrier1 in carrier_list:
+                        for cell_2 in all_cells:
+                            verb = all(cell_curr in verbose_cells for cell_curr in [cell_1, cell_2])
+                            # verb = True
+                            if cell_1 == cell_2 or cell_1 == cell_mid or cell_2 == cell_mid or cell_mid in self.special_cells:
+                                continue
+                            for carrier2 in self.vc_map[cell_2][cell_mid]:
+                                res, new_carrier = self.and_rule(cell_1, cell_2, cell_mid, carrier1, carrier2, new_vc_curr)
+                                if res == 1:
+                                    if verb:
+                                        logger.info(f"Found VC after and rule with {cell_1}, {cell_2} and carrier {new_carrier}")
+                                        _ = input()
+                                    new_vc_curr = update_cell_map(new_vc_curr, cell_1, cell_2, new_carrier)
+                                if res == 2:
+                                    if verb:
+                                        logger.info(f"Found VSC after and rule with {cell_1}, {cell_2} and carrier {new_carrier}")
+                                        _ = input()
+                                    self.vsc_map = update_cell_map(self.vsc_map, cell_1, cell_2, new_carrier)
+                                    carriers_to_iterate = deepcopy(self.vsc_map[cell_1][cell_2])
+                                    carriers_to_iterate.remove(new_carrier)
+                                    new_vcs_or = self.or_rule(carriers_to_iterate, new_carrier, new_carrier)
+                                    if verb:
+                                        logger.info("Updated VC after or with carriers:")
+                                        logger.info(new_vcs_or)
+                                        _ = input()
+                                    for new_vc_or in new_vcs_or:
+                                        new_vc_curr = update_cell_map(new_vc_curr, cell_1, cell_2, new_vc_or)
+            ###
+            logger.info(f"Number of new VCs: {len(new_vc_curr)}")
+            for c1, sub_map in new_vc_curr.items():
+                for c2, carrier_list in sub_map.items():
+                    for carrier in carrier_list:
+                        # if carrier in self.vc_map[c1][c2]:
+                        #     logger.info(f"duplicates {c1}, {c2}, carrier: {carrier}")
+                        self.vc_map = update_cell_map(self.vc_map, c1, c2, carrier)
+                # search
+            new_vc_map = deepcopy(new_vc_curr)
+        return new_vc_map
+    
+    def create_adjacency_matrix(self):
+        all_cells = self.empty_cells.union(self.player_groups)
+        all_cells_l = sorted(list(all_cells), key=lambda x: x.index)
+        all_cells_l = [(ix, cell) for ix, cell in enumerate(all_cells_l)]
+        adjacency_matrix = np.zeros((len(all_cells_l), len(all_cells_l)), dtype=int)
+        for ix in range(len(all_cells_l)):
+            continue
+        pass
+        
 
 def merge_carriers(carrier_maps):
     """
@@ -133,139 +311,18 @@ def merge_carriers(carrier_maps):
             res_map[cell].extend(carriers)
     return res_map
 
-def update_groups_and_VC(cell, empty_cells, black_groups, vc_map, vsc_map):
-    """
-    Update B groups, empty cells and maps when adding cell of B color
-    """
-    new_cell = CellGroup([cell])
-    new_gr, old_groups = create_new_group_from_cell(new_cell, black_groups)
-    ###
-    empty_cells.remove(new_cell)
-    black_groups.add(new_gr)
-    for old_gr in old_groups:
-        black_groups.discard(old_gr)
-    ###
-    old_vc_list = [vc_map.pop(old_gr) for old_gr in old_groups]
-    ## move to function
-    for old_vc in old_vc_list:
-        for old_gr in old_groups:
-            old_vc.pop(old_gr, None)
-    new_vc = merge_carriers(old_vc_list)
-    if len(new_vc):
-        for gr, carrier_map in vc_map.items():
-            for old_gr in old_groups:
-                carrier_map.pop(old_gr, None)
-            carrier_map[new_gr] = new_vc[gr]
-        vc_map[new_gr] = new_vc
-    return empty_cells, black_groups, vc_map, vsc_map
 
-def update_cell_map(cell_map, cell_1, cell_2, carrier):
-    """
-    Update map with carriers using carrier. Ensures symmetry
-    """
-    cell_map.setdefault(cell_1, dict())
-    cell_map[cell_1].setdefault(cell_2, [])
-    if carrier not in cell_map[cell_1][cell_2]:
-        cell_map[cell_1][cell_2].append(carrier)
-    cell_map.setdefault(cell_2, dict())
-    cell_map[cell_2].setdefault(cell_1, [])
-    if carrier not in cell_map[cell_2][cell_1]:
-        cell_map[cell_2][cell_1].append(carrier)
-    return cell_map
+"""
+boardState
 
+Bot:
+algo, cache
 
-def and_rule_and_update(cell_1, cell_2, cell_mid, carrier1, carrier2, black_groups, vc_map, vsc_map, new_vc_curr, verbose=True):
-    cell_1_in_cr2 = cell_1.cells.intersection(carrier2) == set()
-    cell_2_in_cr1 = cell_2.cells.intersection(carrier1) == set()
-    carrier_intersection = carrier1.intersection(carrier2) == set()
-    existing_vc = len(vc_map[cell_1][cell_2])>0
-    # existing_vc = set() in vc_map[cell_1][cell_2]
-    if not (cell_1_in_cr2 and cell_2_in_cr1 and carrier_intersection) or existing_vc:
-        return 0, set()
-    new_carrier = carrier1.union(carrier2)
-    if verbose:
-        print(f"1st cell: {cell_1}, 2nd cell: {cell_2}, mid cell: {cell_mid}")
-        print(f"Carrier1: {carrier1}")
-        print(f"Carrier2: {carrier2}")
-    if cell_mid in black_groups:
-        new_vc_curr = update_cell_map(new_vc_curr, cell_1, cell_2, new_carrier)
-        if verbose:
-            print(f"updated VC {new_carrier}")
-        return 1, set()
-
-    else:
-        new_carrier = new_carrier.union(cell_mid.cells)
-        vsc_map[cell_1][cell_2].append(new_carrier)
-        if verbose:
-            print(f"updated VSC {new_carrier}")
-        return 2, new_carrier
-
-def or_rule_and_update(vsc_carriers, carrier_union, carrier_intersection, verbose=False):
-    new_vcs = []
-    for carrier in vsc_carriers:
-        new_uninon = carrier_union.union(carrier)
-        new_intersec = carrier_intersection.intersection(carrier)
-
-        if new_intersec == set():
-            new_vcs.append(new_uninon)
-        else:
-            vsc_carriers_new = deepcopy(vsc_carriers)
-            vsc_carriers_new.remove(carrier)
-            res = or_rule_and_update(vsc_carriers_new, new_uninon, new_intersec)
-            new_vcs.extend(res)
-    return new_vcs
-
-
-
-def H_search(empty_cells, black_groups, new_vc_map, vc_map, vsc_map, generations_num=1, verbose_cells=None):
-    """
-    H search. Iteratively searches for new Virtual connections
-    """
-    # check duplicates in vc_map
-    # treat special cells , top and bootom separatly
-    verbose_cells = [] if verbose_cells is None else verbose_cells
-    ##
-    all_cells = empty_cells.union(black_groups)
-    special_cells = [TopSide(), BottomSide()]
-    for i_gen in range(generations_num):
-        new_vc_curr = dict()
-        for cell_1, sub_map in new_vc_map.items():
-            for cell_mid, carrier_list in sub_map.items():
-                for carrier1 in carrier_list:
-                    for cell_2 in all_cells:
-                        # verb = all(cell_curr in verbose_cells for cell_curr in [cell_1, cell_2])
-                        verb = False
-                        if cell_1 == cell_2 or cell_1 == cell_mid or cell_2 == cell_mid or cell_mid in special_cells:
-                            if verb:
-                                print(f"1st cell: {cell_1}, 2nd cell: {cell_2}, mid cell: {cell_mid}")
-                                print(f"continue")
-                            continue
-                        for carrier2 in vc_map[cell_2][cell_mid]:
-                            
-                            res, new_carrier = and_rule_and_update(cell_1, cell_2, cell_mid, carrier1, carrier2, black_groups, vc_map, vsc_map, new_vc_curr, verbose=verb)
-         
-                            if res == 2:
-                                carriers_to_iterate = deepcopy(vsc_map[cell_1][cell_2])
-                                carriers_to_iterate.remove(new_carrier)
-                                new_vcs_or = or_rule_and_update(carriers_to_iterate, new_carrier, new_carrier)
-                                if verb:
-                                    print("Updated VC after or")
-                                    print(new_vcs_or)
-                                for new_vc_or in new_vcs_or:
-                                    new_vc_curr = update_cell_map(new_vc_curr, cell_1, cell_2, new_vc_or)
-        ###
-        print("############ non symmetric")
-        print(len(new_vc_curr))
-        for c1, sub_map in new_vc_curr.items():
-            for c2, carrier_list in sub_map.items():
-                for carrier in carrier_list:
-                    vc_map = update_cell_map(vc_map, c1, c2, carrier)
-            # search
-        new_vc_map = deepcopy(new_vc_curr)
-    return vc_map, vsc_map
-
-
-
+make_move(state):
+canonial_view = state.canonical_view()
+inner_repr = repr(canonical_view)
+new_move = algo(inner_repr, cache?)
+"""
 
 
 
