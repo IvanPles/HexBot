@@ -66,16 +66,13 @@ def update_cell_map(cell_map: Dict, cell_1: CellGroup, cell_2: CellGroup, carrie
     """
     cell_map.setdefault(cell_1, dict())
     cell_map[cell_1].setdefault(cell_2, [])
-    cell_map[cell_1][cell_2] = check_and_update_subsets(cell_map[cell_1][cell_2], carrier)
-    # if carrier not in cell_map[cell_1][cell_2]:
-    #     cell_map[cell_1][cell_2].append(carrier)
-
+    if not any(c.issubset(carrier) for c in cell_map[cell_1][cell_2]):
+        cell_map[cell_1][cell_2].append(carrier)
     # second cell
     cell_map.setdefault(cell_2, dict())
     cell_map[cell_2].setdefault(cell_1, [])
-    cell_map[cell_2][cell_1] = check_and_update_subsets(cell_map[cell_2][cell_1], carrier)
-    # if carrier not in cell_map[cell_2][cell_1]:
-    #     cell_map[cell_2][cell_1].append(carrier)
+    if not any(c.issubset(carrier) for c in cell_map[cell_2][cell_1]):
+        cell_map[cell_2][cell_1].append(carrier)
     return cell_map
 
 def check_and_update_subsets(old_sets: List, new_set: Set):
@@ -282,8 +279,6 @@ class BoardStateGroups:
             for c1, sub_map in new_vc_curr.items():
                 for c2, carrier_list in sub_map.items():
                     for carrier in carrier_list:
-                        # if carrier in self.vc_map[c1][c2]:
-                        #     logger.info(f"duplicates {c1}, {c2}, carrier: {carrier}")
                         self.vc_map = update_cell_map(self.vc_map, c1, c2, carrier)
                 # search
             new_vc_map = deepcopy(new_vc_curr)
