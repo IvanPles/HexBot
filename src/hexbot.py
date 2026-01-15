@@ -8,15 +8,16 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 adjacent = [(-1, 0), (0, -1), (1, 0), (0, 1), (-1, 1), (1, -1)]
+COL_INX = 100
 
 
 class CellGroup:
 
     def __init__(self, cells: List[Tuple[int, int]], n):
         self.cells = set(cells)
-        sorted_cells = sorted(cells, key=lambda x: x[0]+x[1]*100)
+        sorted_cells = sorted(cells, key=lambda x: x[0]+x[1]*COL_INX)
         self.hash_val = hash(tuple(sorted_cells))
-        self.index = sorted_cells[0][0]+sorted_cells[0][1]*100
+        self.index = sorted_cells[0][0]+sorted_cells[0][1]*COL_INX
         self.n = n
 
     def __eq__(self, other) -> bool:
@@ -120,7 +121,6 @@ class BoardStateGroups:
     def create_groups_form_board(self, board: np.ndarray):
         bottom_side = BottomSide(self.n)
         top_side = TopSide(self.n)
-        self.special_cells.extend([top_side, bottom_side])
         self.player_groups = {bottom_side, top_side}
         for i in range(self.n):
             for j in range(self.n):
@@ -135,7 +135,12 @@ class BoardStateGroups:
         ### merge groups
         self.player_groups = self.merge_groups(self.player_groups)
         self.opponent_groups = self.merge_groups(self.opponent_groups)
+        self.collect_special_cells()
         return 
+
+    def collect_special_cells(self):
+        cells = [c for c in self.player_groups if c.index<=self.n]
+        self.special_cells = [min(cells, key=lambda x: x.index), max(cells, key=lambda x: x.index)]
 
     @staticmethod
     def merge_cell_and_group(cell: CellGroup, groups: Set[CellGroup]):
@@ -164,41 +169,95 @@ class BoardStateGroups:
             for m_gr in merged_groups:
                 new_groups.discard(m_gr)
         return new_groups
+
+    def create_vc_for_adjacent(self, cell_gr: CellGroup):
+        vcs = dict()
+        adjacent_cells = cell_gr.adjacency()
+        for adj_cell in adjacent_cells:
+            adj_cell_gr = CellGroup([adj_cell], self.n)
+            if adj_cell_gr in self.empty_cells and set() not in self.vc_map[cell_gr][adj_cell_gr]:
+                self.vc_map[cell_gr][adj_cell_gr].append(set()) 
+                self.vc_map[adj_cell_gr][cell_gr].append(set()) 
+                vcs = update_cell_map(vcs, cell_gr, adj_cell_gr, set())
+        return vcs
     
     def create_vc_map_from_cells(self):
         total_groups = self.empty_cells.union(self.player_groups)
-        vc_map = {gr: {gr2: [] for gr2 in total_groups } for gr in total_groups}
-        vsc_map ={gr: {gr2: [] for gr2 in total_groups } for gr in total_groups}
+        self.vc_map = {gr: {gr2: [] for gr2 in total_groups } for gr in total_groups}
+        self.vsc_map = {gr: {gr2: [] for gr2 in total_groups } for gr in total_groups}
         for cell_gr in total_groups:
-            adjacent_cells = cell_gr.adjacency()
-            for adj_cell in adjacent_cells:
-                adj_cell_gr = CellGroup([adj_cell], self.n)
-                if adj_cell_gr in self.empty_cells and len(vc_map[cell_gr][adj_cell_gr])<1:
-                    vc_map[cell_gr][adj_cell_gr].append(set()) 
-                    vc_map[adj_cell_gr][cell_gr].append(set()) 
+            _ = self.create_vc_for_adjacent(cell_gr)
         ##
-        self.vc_map = vc_map
-        self.vsc_map = vsc_map
         return None
     
-    def make_move(self, cell: Tuple[int, int], player=True):
+    def remove_cell_from_maps(self, cell: CellGroup):
+        self.vc_map.pop(cell)
+        self.vsc_map.pop(cell)
+        for sub_map in self.vc_map.values():
+            sub_map.pop(cell)
+        ##
+        for sub_map in self.vsc_map.values():
+            sub_map.pop(cell)
+    
+    def copy_state(self, other):
+        """
+        Method to copy everything from this state to other state
+        """
+        other.empty_cells = deepcopy(self.empty_cells)
+        other.player_groups = deepcopy(self.player_groups)
+        other.opponent_groups = deepcopy(self.opponent_groups)
+        other.vc_map = deepcopy(self.vc_map)
+        other.vsc_map = deepcopy(self.vsc_map)
+        return other
+    
+    def make_move(self, cell: Tuple[int, int], player: bool = True):
         cell_gr = CellGroup([cell], self.n)
         new_state = BoardStateGroups(self.n)
-        new_state.empty_cells = self.empty_cells.copy()
-        new_state.player_groups = self.player_groups.copy()
-        new_state.opponent_groups = self.opponent_groups.copy()
+        new_state = self.copy_state(new_state)
+        ### remove cell from everywhere (check do we need to remove what it is our move?)
+        new_state.empty_cells.discard(cell_gr)
+        new_state.remove_cell_from_maps(cell_gr)
+        ##
         if player:
+            ### merge groups if needed
             new_group, merged_groups = BoardStateGroups.merge_cell_and_group(cell_gr, self.player_groups)
+            new_state.collect_special_cells()
+            # remove merged groups from all maps
             for m_gr in merged_groups:
-                new_state.player_groups.discard(m_gr)
+                new_state.remove_cell_from_maps(m_gr)
+            # add new group
             new_state.player_groups.add(new_group)
+            new_state_total_groups = new_state.player_groups.union(new_state.empty_cells)
+            new_state.vc_map[new_group] = {gr2: [] for gr2 in new_state_total_groups}
+            new_state.vsc_map[new_group] = {gr2: [] for gr2 in new_state_total_groups}
+            for c in new_state_total_groups:
+                new_state.vc_map[c][new_group] = []
+                new_state.vsc_map[c][new_group] = []
+            new_vcs = new_state.create_vc_for_adjacent(new_group)
+            
         else:
             new_group, merged_groups = BoardStateGroups.merge_cell_and_group(cell_gr, self.opponent_groups)
             for m_gr in merged_groups:
                 new_state.opponent_groups.discard(m_gr)
             new_state.opponent_groups.add(new_group)
-        new_state.empty_cells.discard(cell_gr)
-        return new_state
+            new_vcs = dict()
+       
+        new_state.update_vc_map_carriers(cell, player)
+        return new_state, new_vcs
+
+    def update_vc_map_carriers(self, cell: Tuple[int, int], player: bool = True):
+        cell_set = set()
+        cell_set.add(cell)
+        for c, sub_map in self.vsc_map.items():
+            for c2, carriers_list in sub_map.items():
+                self.vsc_map[c][c2] = [carrier for carrier in carriers_list if cell not in carrier]
+
+        for c, sub_map in self.vc_map.items():
+            for c2, carriers_list in sub_map.items():
+                self.vc_map[c][c2] = [carrier for carrier in carriers_list if cell not in carrier]
+                if not player:
+                    self.vsc_map[c][c2].extend([carrier-cell_set for carrier in carriers_list if cell in carrier])
+        return None
 
     def and_rule(self, cell_1: CellGroup, cell_2: CellGroup, cell_mid: CellGroup, 
                  carrier1: Set, carrier2: Set, new_vcs: Dict):
