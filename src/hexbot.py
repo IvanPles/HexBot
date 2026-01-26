@@ -111,6 +111,7 @@ class BoardStateGroups:
         self.vc_map = dict() 
         self.vsc_map = dict()
         self.special_cells = list()
+        self.resist_def = 1.2
         
     def load_from_board(self, board_state: np.ndarray):
         assert len(board_state.shape) == 2
@@ -342,16 +343,29 @@ class BoardStateGroups:
                 # search
             new_vc_map = deepcopy(new_vc_curr)
         return new_vc_map
+
+    def resistance_from_carriers(self, carriers: List):
+        if set() in carriers:
+            return 1.0
+        else:
+            return self.resist_def
     
     def create_adjacency_matrix(self):
         all_cells = self.empty_cells.union(self.player_groups)
         all_cells_l = sorted(list(all_cells), key=lambda x: x.index)
-        all_cells_l = [(ix, cell) for ix, cell in enumerate(all_cells_l)]
-        adjacency_matrix = np.zeros((len(all_cells_l), len(all_cells_l)), dtype=int)
-        for ix in range(len(all_cells_l)):
-            continue
-        pass
-        
+        all_cells_inx = {cell: ix for ix, cell in enumerate(all_cells_l)}
+        adjacency_matrix = np.zeros((len(all_cells_l), len(all_cells_l)), dtype=float)
+        for cell in all_cells_l:
+            for cell_2, carriers in self.vc_map[cell].items():
+                ix, jx = all_cells_inx[cell], all_cells_inx[cell_2]
+                is_players_stone = any(c in self.player_groups for c in [cell, cell_2])
+                coef = 0.5 if is_players_stone else 1.0
+                if len(carriers) and not (adjacency_matrix[ix, jx]>0):
+                    resist = self.resistance_from_carriers(carriers)
+                    adjacency_matrix[ix, jx] = resist*coef
+                    adjacency_matrix[jx, ix] = resist*coef
+
+        return adjacency_matrix
 
 def merge_carriers(carrier_maps):
     """
