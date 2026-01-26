@@ -103,7 +103,7 @@ def adjacency(cell: Tuple[int, int], n):
 
 class BoardStateGroups:
 
-    def __init__(self, n: int):
+    def __init__(self, n: int, **kwargs):
         self.n = n
         self.player_groups = set()
         self.empty_cells = set()
@@ -111,7 +111,8 @@ class BoardStateGroups:
         self.vc_map = dict() 
         self.vsc_map = dict()
         self.special_cells = list()
-        self.resist_def = 1.2
+        self.resist_def = kwargs.get('resist_def', 1.2)
+        self.max_depth_or = kwargs.get('max_depth_or', 5)
         
     def load_from_board(self, board_state: np.ndarray):
         assert len(board_state.shape) == 2
@@ -280,8 +281,10 @@ class BoardStateGroups:
             else:
                 return 0, set()
 
-    def or_rule(self, vsc_carriers: Set, carrier_union: Set, carrier_intersection: Set):
+    def or_rule(self, vsc_carriers: Set, carrier_union: Set, carrier_intersection: Set, current_depth: int):
         new_vcs = []
+        if current_depth == 0:
+            return []
         for carrier in vsc_carriers:
             new_union = carrier_union.union(carrier)
             new_intersec = carrier_intersection.intersection(carrier)
@@ -290,7 +293,7 @@ class BoardStateGroups:
             else:
                 vsc_carriers_new = deepcopy(vsc_carriers)
                 vsc_carriers_new.remove(carrier)
-                res = self.or_rule(vsc_carriers_new, new_union, new_intersec)
+                res = self.or_rule(vsc_carriers_new, new_union, new_intersec, current_depth-1)
                 for val in res:
                     new_vcs = check_and_update_subsets(new_vcs, val)
         return new_vcs
@@ -309,26 +312,26 @@ class BoardStateGroups:
                 for cell_mid, carrier_list in sub_map.items():
                     for carrier1 in carrier_list:
                         for cell_2 in all_cells:
-                            verb = all(cell_curr in verbose_cells for cell_curr in [cell_1, cell_2])
+                            verbose = all(cell_curr in verbose_cells for cell_curr in [cell_1, cell_2])
                             # verb = True
                             if cell_1 == cell_2 or cell_1 == cell_mid or cell_2 == cell_mid or cell_mid in self.special_cells:
                                 continue
                             for carrier2 in self.vc_map[cell_2][cell_mid]:
                                 res, new_carrier = self.and_rule(cell_1, cell_2, cell_mid, carrier1, carrier2, new_vc_curr)
                                 if res == 1:
-                                    if verb:
+                                    if verbose:
                                         logger.info(f"Found VC after and rule with {cell_1}, {cell_2} and carrier {new_carrier}")
                                         _ = input()
                                     new_vc_curr = update_cell_map(new_vc_curr, cell_1, cell_2, new_carrier)
                                 if res == 2:
-                                    if verb:
+                                    if verbose:
                                         logger.info(f"Found VSC after and rule with {cell_1}, {cell_2} and carrier {new_carrier}")
                                         _ = input()
                                     self.vsc_map = update_cell_map(self.vsc_map, cell_1, cell_2, new_carrier)
                                     carriers_to_iterate = deepcopy(self.vsc_map[cell_1][cell_2])
                                     carriers_to_iterate.remove(new_carrier)
-                                    new_vcs_or = self.or_rule(carriers_to_iterate, new_carrier, new_carrier)
-                                    if verb:
+                                    new_vcs_or = self.or_rule(carriers_to_iterate, new_carrier, new_carrier, self.max_depth_or)
+                                    if verbose:
                                         logger.info("Updated VC after or with carriers:")
                                         logger.info(new_vcs_or)
                                         _ = input()
