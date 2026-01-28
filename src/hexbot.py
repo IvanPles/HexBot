@@ -2,10 +2,11 @@ import numpy as np
 from typing import Dict, List, Set, Tuple
 from copy import deepcopy
 import logging
+import time
 
 ###
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 
 adjacent = [(-1, 0), (0, -1), (1, 0), (0, 1), (-1, 1), (1, -1)]
 COL_INX = 100
@@ -152,13 +153,9 @@ class BoardStateGroups:
         adjacent_cells = cell.adjacency()
         merged_groups = []
         for adj_cell in adjacent_cells:
-            logger.info(f'searching {adj_cell}, {cell}')
             for gr in groups:
                 if adj_cell in gr.cells and gr not in merged_groups:
-                    logger.info(f'merging group {adj_cell}, {cell}')
                     merged_groups.append(gr)
-                else:
-                    logger.info(f'not found {adj_cell}, {gr}')
         new_group = merge_cellgroups(merged_groups+[cell])
         return new_group, merged_groups
 
@@ -308,6 +305,7 @@ class BoardStateGroups:
         for i_gen in range(generations_num):
             new_vc_curr = dict()
             logger.info(f'Generation {i_gen}')
+            time_gen = time.time()
             for cell_1, sub_map in new_vc_map.items():
                 for cell_mid, carrier_list in sub_map.items():
                     for carrier1 in carrier_list:
@@ -320,24 +318,25 @@ class BoardStateGroups:
                                 res, new_carrier = self.and_rule(cell_1, cell_2, cell_mid, carrier1, carrier2, new_vc_curr)
                                 if res == 1:
                                     if verbose:
-                                        logger.info(f"Found VC after and rule with {cell_1}, {cell_2} and carrier {new_carrier}")
+                                        logger.debug(f"Found VC after and rule with {cell_1}, {cell_2} and carrier {new_carrier}")
                                         _ = input()
                                     new_vc_curr = update_cell_map(new_vc_curr, cell_1, cell_2, new_carrier)
                                 if res == 2:
                                     if verbose:
-                                        logger.info(f"Found VSC after and rule with {cell_1}, {cell_2} and carrier {new_carrier}")
+                                        logger.debug(f"Found VSC after and rule with {cell_1}, {cell_2} and carrier {new_carrier}")
                                         _ = input()
                                     self.vsc_map = update_cell_map(self.vsc_map, cell_1, cell_2, new_carrier)
                                     carriers_to_iterate = deepcopy(self.vsc_map[cell_1][cell_2])
                                     carriers_to_iterate.remove(new_carrier)
                                     new_vcs_or = self.or_rule(carriers_to_iterate, new_carrier, new_carrier, self.max_depth_or)
                                     if verbose:
-                                        logger.info("Updated VC after or with carriers:")
-                                        logger.info(new_vcs_or)
+                                        logger.debug("Updated VC after or with carriers:")
+                                        logger.debug(new_vcs_or)
                                         _ = input()
                                     for new_vc_or in new_vcs_or:
                                         new_vc_curr = update_cell_map(new_vc_curr, cell_1, cell_2, new_vc_or)
             ###
+            logger.info(f'{time.time() - time_gen} spent on generation {i_gen}')
             logger.info(f"Number of new VCs: {len(new_vc_curr)}")
             for c1, sub_map in new_vc_curr.items():
                 for c2, carrier_list in sub_map.items():
