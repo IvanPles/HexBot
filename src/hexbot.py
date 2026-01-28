@@ -278,7 +278,7 @@ class BoardStateGroups:
             else:
                 return 0, set()
 
-    def or_rule(self, vsc_carriers: Set, carrier_union: Set, carrier_intersection: Set, current_depth: int):
+    def or_rule(self, vsc_carriers: List, carrier_union: Set, carrier_intersection: Set, current_depth: int):
         new_vcs = []
         if current_depth == 0:
             return []
@@ -295,6 +295,22 @@ class BoardStateGroups:
                     new_vcs = check_and_update_subsets(new_vcs, val)
         return new_vcs
 
+    def or_rule_v2(self, vsc_carriers: List, carrier_union: Set, carrier_intersection: Set, current_depth: int):
+        ###  
+        new_vcs = []
+        if current_depth == 0:
+            return []
+        candidates = [(carrier_union.union(c[0]), carrier_intersection.intersection(c[1])) for c in vsc_carriers]
+        new_vcs = [cand[0] for cand in candidates if cand[1] == set()]
+        candidates = [cand for cand in candidates if cand[1] != set()]
+        for ix, cand in enumerate(candidates):
+            cand_u, cand_intersec = cand
+            res = self.or_rule_v2([c for c in candidates[ix+1:]], cand_u, cand_intersec, current_depth=current_depth-1)
+            for val in res:
+                new_vcs = check_and_update_subsets(new_vcs, val)
+
+        return new_vcs
+
     def H_search(self, new_vc_map: Dict, generations_num: int = 1, verbose_cells=None):
         """
         H search. Iteratively searches for new Virtual connections
@@ -306,6 +322,7 @@ class BoardStateGroups:
             new_vc_curr = dict()
             logger.info(f'Generation {i_gen}')
             time_gen = time.time()
+            max_time_or = (None, None, 0)
             for cell_1, sub_map in new_vc_map.items():
                 for cell_mid, carrier_list in sub_map.items():
                     for carrier1 in carrier_list:
@@ -328,16 +345,26 @@ class BoardStateGroups:
                                     self.vsc_map = update_cell_map(self.vsc_map, cell_1, cell_2, new_carrier)
                                     carriers_to_iterate = deepcopy(self.vsc_map[cell_1][cell_2])
                                     carriers_to_iterate.remove(new_carrier)
-                                    new_vcs_or = self.or_rule(carriers_to_iterate, new_carrier, new_carrier, self.max_depth_or)
+                                    carriers_to_iterate = [(c, c) for c in carriers_to_iterate]
+                                    t_or_rule = time.time()
+                                    new_vcs_or = self.or_rule_v2(carriers_to_iterate, new_carrier, new_carrier, self.max_depth_or)
+                                    t_elapsed_or = time.time() - t_or_rule
+                                    if t_elapsed_or >max_time_or[2]:
+                                        max_time_or = (cell_1, cell_2, t_elapsed_or)
                                     if verbose:
                                         logger.debug("Updated VC after or with carriers:")
                                         logger.debug(new_vcs_or)
+                                        logger.debug(f'Time elapsed: {t_elapsed_or}')
                                         _ = input()
                                     for new_vc_or in new_vcs_or:
                                         new_vc_curr = update_cell_map(new_vc_curr, cell_1, cell_2, new_vc_or)
             ###
             logger.info(f'{time.time() - time_gen} spent on generation {i_gen}')
-            logger.info(f"Number of new VCs: {len(new_vc_curr)}")
+            c1, c2, t11 = max_time_or
+            logger.info(f'Max time or is {t11} for cells: {c1, c2}')
+            if c1 is not None:
+                logger.info(f'number of vsc: {len(self.vsc_map[c1][c2])}, combinateions: {np.math.comb(len(self.vsc_map[c1][c2]), self.max_depth_or)}')
+                logger.info(f"Number of new VCs: {len(new_vc_curr)}")
             for c1, sub_map in new_vc_curr.items():
                 for c2, carrier_list in sub_map.items():
                     for carrier in carrier_list:
