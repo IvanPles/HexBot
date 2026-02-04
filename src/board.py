@@ -9,10 +9,11 @@ class BoardState:
         self.state = board_state
         self.move = move # move order True - black, False - white
     
-    def make_move(self, coords: tuple[int, int]):
+    def make_move(self, coords: tuple[int, int], player=None):
 
         new_state = self.state.copy()
-        if self.move:
+        move = self.move if player is None else player 
+        if move:
             new_state[coords[0], coords[1]] = 1
         else:
             new_state[coords[0], coords[1]] = -1
