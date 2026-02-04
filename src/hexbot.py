@@ -114,6 +114,9 @@ class BoardStateGroups:
         self.special_cells = list()
         self.resist_def = kwargs.get('resist_def', 1.2)
         self.max_depth_or = kwargs.get('max_depth_or', 5)
+        self.max_carriers = kwargs.get('max_carriers', 100)
+        self.presort = kwargs.get('presort', True)
+        self.old_or = True
         
     def load_from_board(self, board_state: np.ndarray):
         assert len(board_state.shape) == 2
@@ -198,21 +201,21 @@ class BoardStateGroups:
         for sub_map in self.vsc_map.values():
             sub_map.pop(cell)
     
-    def copy_state(self, other):
+    def copy_state(self):
         """
         Method to copy everything from this state to other state
         """
-        other.empty_cells = deepcopy(self.empty_cells)
-        other.player_groups = deepcopy(self.player_groups)
-        other.opponent_groups = deepcopy(self.opponent_groups)
-        other.vc_map = deepcopy(self.vc_map)
-        other.vsc_map = deepcopy(self.vsc_map)
-        return other
+        new_state = BoardStateGroups(self.n)
+        new_state.empty_cells = deepcopy(self.empty_cells)
+        new_state.player_groups = deepcopy(self.player_groups)
+        new_state.opponent_groups = deepcopy(self.opponent_groups)
+        new_state.vc_map = deepcopy(self.vc_map)
+        new_state.vsc_map = deepcopy(self.vsc_map)
+        return new_state
     
     def make_move(self, cell: Tuple[int, int], player: bool = True):
         cell_gr = CellGroup([cell], self.n)
-        new_state = BoardStateGroups(self.n)
-        new_state = self.copy_state(new_state)
+        new_state = self.copy_state()
         ### remove cell from everywhere (check do we need to remove what it is our move?)
         new_state.empty_cells.discard(cell_gr)
         new_state.remove_cell_from_maps(cell_gr)
@@ -297,6 +300,7 @@ class BoardStateGroups:
 
     def or_rule_v2(self, vsc_carriers: List, carrier_union: Set, carrier_intersection: Set, current_depth: int):
         ###  
+        vsc_carriers = vsc_carriers[:self.max_carriers]
         new_vcs = []
         if current_depth == 0:
             return []
@@ -310,6 +314,31 @@ class BoardStateGroups:
                 new_vcs = check_and_update_subsets(new_vcs, val)
 
         return new_vcs
+
+    def or_rule_v4(self, vsc_carriers: List, new_carrier: Set, max_depth: int, presort = False):
+        if presort:
+            intersections = [(c, len(c.intersection(new_carrier))) for c in vsc_carriers]
+            intersections = sorted(intersections, key=lambda x: x[1])
+            vsc_carriers = [c[0] for c in intersections]
+        vsc_carriers = vsc_carriers[:self.max_carriers]
+        ### iterative version
+        new_vcs = []
+        stack = [(new_carrier, new_carrier, 0, 0)]
+        num_evals = 0
+        while stack:
+            carrier_union, carrier_intersec, depth, inx = stack.pop()
+            if depth>=max_depth or inx>=len(vsc_carriers):
+                continue
+            num_evals+=1
+            new_intersec = vsc_carriers[inx].intersection(carrier_intersec)
+            new_union = vsc_carriers[inx].union(carrier_union)
+            if new_intersec == set():
+                new_vcs = check_and_update_subsets(new_vcs, new_union)
+            else:
+                stack.append((new_union, new_intersec, depth+1, inx+1))
+            stack.append((carrier_union, carrier_intersec, depth, inx+1))
+        return new_vcs
+
 
     def H_search(self, new_vc_map: Dict, generations_num: int = 1, verbose_cells=None):
         """
@@ -345,10 +374,16 @@ class BoardStateGroups:
                                     self.vsc_map = update_cell_map(self.vsc_map, cell_1, cell_2, new_carrier)
                                     carriers_to_iterate = deepcopy(self.vsc_map[cell_1][cell_2])
                                     carriers_to_iterate.remove(new_carrier)
-                                    carriers_to_iterate = [(c, c) for c in carriers_to_iterate]
-                                    t_or_rule = time.time()
-                                    new_vcs_or = self.or_rule_v2(carriers_to_iterate, new_carrier, new_carrier, self.max_depth_or)
-                                    t_elapsed_or = time.time() - t_or_rule
+                                    if self.old_or:
+                                        carriers_to_iterate = [(c, c) for c in carriers_to_iterate]
+                                        t_or_rule = time.time()
+                                        new_vcs_or = self.or_rule_v2(carriers_to_iterate, new_carrier, new_carrier, self.max_depth_or)
+                                        t_elapsed_or = time.time() - t_or_rule
+                                    else:
+                                        t_or_rule = time.time()
+                                        new_vcs_or = self.or_rule_v4(carriers_to_iterate, new_carrier, self.max_depth_or, presort=self.presort)
+                                        t_elapsed_or = time.time() - t_or_rule
+   
                                     if t_elapsed_or >max_time_or[2]:
                                         max_time_or = (cell_1, cell_2, t_elapsed_or)
                                     if verbose:
@@ -363,7 +398,7 @@ class BoardStateGroups:
             c1, c2, t11 = max_time_or
             logger.info(f'Max time or is {t11} for cells: {c1, c2}')
             if c1 is not None:
-                logger.info(f'number of vsc: {len(self.vsc_map[c1][c2])}, combinateions: {np.math.comb(len(self.vsc_map[c1][c2]), self.max_depth_or)}')
+                logger.info(f'number of vsc: {len(self.vsc_map[c1][c2])}, combinations: {np.math.comb(min(len(self.vsc_map[c1][c2]), self.max_carriers), self.max_depth_or)}')
                 logger.info(f"Number of new VCs: {len(new_vc_curr)}")
             for c1, sub_map in new_vc_curr.items():
                 for c2, carrier_list in sub_map.items():
